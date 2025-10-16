@@ -28,6 +28,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.bondoc_rpggame.GameViewModel
 import com.example.bondoc_rpggame.R
+import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextAlign
+
 
 @Composable
 fun GameScreen(viewModel: GameViewModel = viewModel()) {
@@ -44,11 +49,18 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val enemyHealRem by viewModel.enemyHealRemaining.collectAsState()
     val enemySpecialRem by viewModel.enemySpecialRemaining.collectAsState()
 
+    val playerHit by viewModel.playerHit.collectAsState()
+    val enemyHit by viewModel.enemyHit.collectAsState()
+    val playerHealed by viewModel.playerHealed.collectAsState()
+    val enemyHealed by viewModel.enemyHealed.collectAsState()
+
     val logs by viewModel.log.collectAsState()
     val playerBlocking by viewModel.playerBlocking.collectAsState()
     val enemyBlocking by viewModel.enemyBlocking.collectAsState()
 
-    // HP bar flash when damaged
+    val isGameOver by viewModel.gameOver.collectAsState()
+    val resultText by viewModel.gameResult.collectAsState()
+
     var lastPlayerHp by remember { mutableStateOf(playerHp) }
     var lastEnemyHp by remember { mutableStateOf(enemyHp) }
 
@@ -63,7 +75,6 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     LaunchedEffect(playerHp) { lastPlayerHp = playerHp }
     LaunchedEffect(enemyHp) { lastEnemyHp = enemyHp }
 
-    // idle bounce of sprites
     val idleBounce = rememberInfiniteTransition(label = "bounce")
     val playerScale by idleBounce.animateFloat(
         initialValue = 0.98f,
@@ -87,10 +98,11 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Coroutine RPG Battle", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { viewModel.resetGame() }) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = "Reset")
-                    }
+                    Text(
+                        "Coroutine RPG Game",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }
@@ -105,7 +117,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
 
             // Enemy card
             CharacterCard(
-                title = "Enemy",
+                title = "WILD SLIME",
                 hp = enemyHp,
                 maxHp = viewModel.enemy.maxHealth,
                 attackRem = enemyAttackRem,
@@ -114,20 +126,15 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 specialRem = enemySpecialRem,
                 scale = enemyScale,
                 blockVisible = enemyBlocking,
-                hpFlash = enemyFlash.value
-            )
-
-            // spacer
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp)
-                    .background(Color(0xFFDDE7FF), RoundedCornerShape(8.dp))
+                hpFlash = enemyFlash.value,
+                isHit = enemyHit,
+                isHealed = enemyHealed,
+                isPlayer = false
             )
 
             // Player card
             CharacterCard(
-                title = "Player",
+                title = "BLASTOISE",
                 hp = playerHp,
                 maxHp = viewModel.player.maxHealth,
                 attackRem = playerAttackRem,
@@ -136,17 +143,19 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 specialRem = playerSpecialRem,
                 scale = playerScale,
                 blockVisible = playerBlocking,
-                hpFlash = playerFlash.value
+                hpFlash = playerFlash.value,
+                isHit = playerHit,
+                isHealed = playerHealed,
+                isPlayer = true
             )
 
-            // Reset button
-            OutlinedButton(
-                onClick = { viewModel.resetGame() },
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            ) { Text("Reset") }
-
             // Combat log
-            Text("Combat Log", fontWeight = FontWeight.Bold)
+            Text(
+                "Combat Log",
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
             Divider()
             LazyColumn(
                 modifier = Modifier
@@ -156,16 +165,38 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                     .padding(8.dp),
                 reverseLayout = true
             ) {
-                itemsIndexed(logs) { _, item ->
-                    Text(
-                        text = "• $item",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(vertical = 2.dp)
-                    )
+                itemsIndexed(logs, key = { idx, item -> item.hashCode() + idx }) { _, item ->
+                    var visible by remember(item) { mutableStateOf(false) }
+                    LaunchedEffect(item) { visible = true }
+
+                    AnimatedVisibility(
+                        visible = visible,
+                        enter = fadeIn(animationSpec = tween(200))
+                    ) {
+                        Text(
+                            text = "• $item",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .padding(vertical = 2.dp)
+                                .fillMaxWidth()
+                        )
+                    }
                 }
             }
         }
+    }
+    if (isGameOver) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Battle Over") },
+            text = { Text(resultText) },
+            confirmButton = {
+                Button(onClick = { viewModel.resetGame() }) {
+                    Text("Reset")
+                }
+            }
+        )
     }
 }
 
@@ -180,72 +211,114 @@ private fun CharacterCard(
     specialRem: Long,
     scale: Float,
     blockVisible: Boolean,
-    hpFlash: Float
+    hpFlash: Float,
+    isHit: Boolean,
+    isHealed: Boolean,
+    isPlayer: Boolean
 ) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFEFEFF))
+    val cardShape = RoundedCornerShape(20.dp)
+    val gradientBrush = if (isPlayer) {
+        Brush.verticalGradient(
+            colors = listOf(Color(0xFFF2F7FF), Color(0xFFDCE8FF))
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(Color(0xFFF2FFF5), Color(0xFFDFF8E5))
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(cardShape)
+            .background(gradientBrush)
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f)
-                )
-
-                //Sprite
-                Image(
-                    painter = painterResource(
-                        if (title == "Player") R.drawable.player_sprite else R.drawable.enemy_sprite
-                    ),
-                    contentDescription = "$title sprite",
-                    modifier = Modifier
-                        .size(64.dp)
-                        .scale(scale)
-                        .graphicsLayer {
-                            if (title != "Player") scaleX = -1f
-                        }
-                )
-            }
-
-            // HP bar
-            val progress = hp.toFloat() / maxHp.toFloat()
-            LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp)
-                    .background(
-                        if (hpFlash > 0f) Color(0xFFFFE5E5) else Color.Transparent,
-                        RoundedCornerShape(6.dp)
-                    ),
-            )
-            Text("HP: $hp / $maxHp", fontWeight = FontWeight.Medium)
-
-            AnimatedVisibility(blockVisible) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text("BLOCKING") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Security, contentDescription = null)
-                    }
-                )
-            }
-
-            // Cooldowns
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Card(
+            shape = cardShape,
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                CooldownIconTimer(attackRem, Icons.Default.Bolt,     "Attack", Modifier.weight(1f))
-                CooldownIconTimer(blockRem,  Icons.Default.Security, "Block",  Modifier.weight(1f))
-                CooldownIconTimer(healRem,   Icons.Default.Healing,  "Heal",   Modifier.weight(1f))
+                Text(
+                    text = if (isPlayer) "Blastoise" else "Wild Slime",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .scale(scale)
+                        .clip(RoundedCornerShape(16.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(
+                            id = if (isPlayer) R.drawable.player_sprite else R.drawable.enemy_sprite
+                        ),
+                        contentDescription = "${if (isPlayer) "Blastoise" else "Slime"} sprite",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { if (!isPlayer) scaleX = -1f }
+                    )
+
+                    // Overlay fx
+                    AnimatedOverlay(visible = blockVisible, color = Color(0xFF4DA3FF), alphaOn = 0.20f)
+                    AnimatedOverlay(visible = isHealed,     color = Color(0xFF67D36E), alphaOn = 0.22f)
+                    AnimatedOverlay(visible = isHit,        color = Color.White,       alphaOn = 0.35f)
+                }
+
+                // Blocking badge
+                AnimatedVisibility(blockVisible) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFFE6F0FF),
+                        border = ButtonDefaults.outlinedButtonBorder
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("BLOCKING", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+
+                // HP bar
+                val progress = hp.toFloat() / maxHp.toFloat()
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(12.dp)
+                        .background(
+                            if (hpFlash > 0f) Color(0xFFFFE5E5) else Color.Transparent,
+                            RoundedCornerShape(6.dp)
+                        ),
+                    color = Color(0xFF4CAF50),
+                    trackColor = Color(0xFFE8F5E9)
+                )
+                Text("HP: $hp / $maxHp", fontWeight = FontWeight.Medium)
+
+                // Cooldowns
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CooldownIconTimer(attackRem, Icons.Default.Bolt,     "Attack", Modifier.weight(1f))
+                    CooldownIconTimer(blockRem,  Icons.Default.Security, "Block",  Modifier.weight(1f))
+                    CooldownIconTimer(healRem,   Icons.Default.Healing,  "Heal",   Modifier.weight(1f))
+                }
             }
         }
     }
 }
+
 
 @Composable
 private fun CooldownIconTimer(
@@ -285,6 +358,27 @@ private fun CooldownIconTimer(
                 overflow = TextOverflow.Clip
             )
         }
+    }
+}
+
+@Composable
+private fun AnimatedOverlay(
+    visible: Boolean,
+    color: Color,
+    alphaOn: Float
+) {
+    val target = if (visible) alphaOn else 0f
+    val alpha by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = if (visible) 80 else 180),
+        label = "overlayAlpha"
+    )
+    if (alpha > 0f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(color.copy(alpha = alpha), shape = RoundedCornerShape(12.dp))
+        )
     }
 }
 

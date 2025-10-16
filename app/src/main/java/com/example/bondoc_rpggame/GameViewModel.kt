@@ -10,11 +10,9 @@ import kotlin.math.roundToInt
 
 class GameViewModel : ViewModel() {
 
-    // Characters
     val player = Player()
     val enemy = Enemy()
 
-    // Skills
     private val playerAttack = Skill("p_attack", "Attack", cooldownMs = 2200)
     private val playerBlock  = Skill("p_block", "Block", cooldownMs = 6000, durationMs = 2000)
     private val playerHeal   = Skill("p_heal", "Heal",  cooldownMs = 8000)
@@ -25,14 +23,12 @@ class GameViewModel : ViewModel() {
     private val enemyHeal    = Skill("e_heal", "Heal",   cooldownMs = 9000)
     private val enemySpecial = Skill("e_special", "Special", cooldownMs = 14000)
 
-    // Health
     private val _playerHealth = MutableStateFlow(player.currentHealth)
     val playerHealth = _playerHealth.asStateFlow()
 
     private val _enemyHealth = MutableStateFlow(enemy.currentHealth)
     val enemyHealth = _enemyHealth.asStateFlow()
 
-    // Cooldown remaining
     private val _playerAttackRemaining = MutableStateFlow(playerAttack.cooldownMs)
     val playerAttackRemaining = _playerAttackRemaining.asStateFlow()
 
@@ -57,22 +53,26 @@ class GameViewModel : ViewModel() {
     private val _enemySpecialRemaining = MutableStateFlow(enemySpecial.cooldownMs)
     val enemySpecialRemaining = _enemySpecialRemaining.asStateFlow()
 
-    // Combat log
     private val _log = MutableStateFlow<List<String>>(emptyList())
     val log = _log.asStateFlow()
 
     val playerBlocking = MutableStateFlow(false)
     val enemyBlocking = MutableStateFlow(false)
 
-    // All running Jobs
+    val playerHit = MutableStateFlow(false)
+    val enemyHit = MutableStateFlow(false)
+    val playerHealed = MutableStateFlow(false)
+    val enemyHealed = MutableStateFlow(false)
+
+    val gameOver = MutableStateFlow(false)
+    val gameResult = MutableStateFlow("")
+
     private val runningJobs = mutableListOf<Job>()
 
     init {
-        // Start match
         resetGame()
     }
 
-    // Core timer loop helper
     private fun startSkillTimerLoop(
         owner: Character,
         skill: Skill,
@@ -80,7 +80,7 @@ class GameViewModel : ViewModel() {
         onTrigger: suspend () -> Unit
     ): Job = viewModelScope.launch(Dispatchers.Default) {
         var remaining = remainingFlow.value
-        val step = 100L // 100ms tick
+        val step = 100L
 
         while (isActive && player.isAlive() && enemy.isAlive()) {
             delay(step)
@@ -95,21 +95,33 @@ class GameViewModel : ViewModel() {
         }
     }
 
-    // Action implementation
     private fun performAttack(attacker: Character, defender: Character, isSpecial: Boolean = false) {
         if (!attacker.isAlive() || !defender.isAlive()) return
 
         val (damage, isCrit) = attacker.computeAttackDamageAgainst(defender)
 
-        // Special - stronger multiplier
+        // Stronger multiplier
         val final = if (isSpecial) (damage * 1.5).roundToInt() else damage
 
-        // Block reduction if defender is blocking
+        // Block reduce if defender is blocking
         val reduced = if (defender.isBlocking)
             (final * (100 - defender.blockReductionPercent) / 100.0).roundToInt()
         else final
 
         defender.applyDamage(reduced)
+
+        (viewModelScope.launch {
+            if (defender === player) {
+                playerHit.value = true
+                delay(150)
+                playerHit.value = false
+            } else {
+                enemyHit.value = true
+                delay(150)
+                enemyHit.value = false
+            }
+        })
+
         updateHpFlows()
 
         val result: SkillResult = if (isSpecial) {
@@ -142,6 +154,19 @@ class GameViewModel : ViewModel() {
         if (!target.isAlive()) return
         val amount = (target.maxHealth * 0.18).roundToInt() // heal 18% HP
         target.heal(amount)
+
+        viewModelScope.launch {
+            if (target === player) {
+                playerHealed.value = true
+                delay(250)
+                playerHealed.value = false
+            } else {
+                enemyHealed.value = true
+                delay(250)
+                enemyHealed.value = false
+            }
+        }
+
         updateHpFlows()
         appendLog(formatResult(SkillResult.HealResult(target.name, amount)))
     }
@@ -171,16 +196,19 @@ class GameViewModel : ViewModel() {
 
     private fun checkGameEnd() {
         if (!player.isAlive() || !enemy.isAlive()) {
-            appendLog(if (player.isAlive()) "Player wins!" else "Slime wins!")
+            val msg = if (player.isAlive()) "You Win!" else "You Lose!"
+            appendLog(msg)
             stopAllTimers()
+            gameResult.value = msg
+            gameOver.value = true
         }
     }
 
-    // Public API
     fun resetGame() {
         stopAllTimers()
+        gameOver.value = false
+        gameResult.value = ""
 
-        // Reset stats and flags
         player.apply {
             currentHealth = maxHealth
             isBlocking = false
@@ -193,7 +221,6 @@ class GameViewModel : ViewModel() {
         playerBlocking.value = false
         enemyBlocking.value = false
 
-        // Reset cooldowns
         _playerAttackRemaining.value = playerAttack.cooldownMs
         _playerBlockRemaining.value = playerBlock.cooldownMs
         _playerHealRemaining.value = playerHeal.cooldownMs
@@ -206,7 +233,6 @@ class GameViewModel : ViewModel() {
 
         _log.value = listOf("A wild Slime appears! Battle starts.")
 
-        // Start loops
         runningJobs += startSkillTimerLoop(player, playerAttack, _playerAttackRemaining) {
             performAttack(player, enemy)
         }
